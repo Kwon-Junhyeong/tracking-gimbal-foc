@@ -9,61 +9,13 @@ Hardware: STM32F411, two GM3506 BLDC motors, two DRV8313 drivers, two AS5048A ma
 
 ## System
 
-```mermaid
-flowchart LR
-    CAM["Camera on the tilt arm"]
-    subgraph PI["Raspberry Pi, Python"]
-        GS["GStreamer capture<br/>640 x 480"]
-        YO["YOLOv8 tracking<br/>person class, track IDs"]
-        TS["Target selection<br/>one track ID"]
-        OF["Offset to command<br/>dead zone, PD, low-pass"]
-    end
-    subgraph MCU["STM32F411, C"]
-        RX["USART interrupt<br/>packet parser"]
-        TG["Target angle<br/>per axis"]
-        PID["PID position loop"]
-        FOC["FOC voltage output<br/>SVPWM, 25 kHz"]
-        ENC["AS5048A read<br/>SPI, 14-bit"]
-    end
-    DRV["DRV8313 x 2"]
-    MOT["GM3506 x 2"]
+![System: the Raspberry Pi tracks the face and sends a 4-byte packet; the STM32 closes the motor loop on the encoder angle and drives the two motors with FOC](docs/system.png)
 
-    CAM --> GS --> YO --> TS --> OF
-    OF -->|"USART 115200<br/>0xFF, x, y, 0xFE"| RX
-    RX --> TG --> PID --> FOC -->|"PWM x 6"| DRV --> MOT
-    MOT -->|rotor angle| ENC --> PID
-    ENC -->|electrical angle| FOC
-    MOT -.->|pan and tilt move the camera| CAM
-```
-
-The Raspberry Pi only determines the face position. The STM32 closes the motor control loop using encoder feedback, so delayed or dropped frames from the Raspberry Pi do not leave the motors without feedback.
+The Raspberry Pi only decides where the face is. The STM32 closes the motor loop on its own encoder angle, so a slow or dropped frame on the Pi never leaves the motors without feedback.
 
 ## Control loop
 
-```mermaid
-flowchart LR
-    C["x and y commands<br/>signed bytes"] --> R["dead zone, ramp"]
-    R --> I["integrate into target angle<br/>limit ±90°"]
-    I --> E(("+ / −"))
-    S["rotor angle θ<br/>encoder − zero"] --> E
-    E --> P["PID<br/>output Uq, limit 7 V"]
-    P --> IP["inverse Park<br/>Ud = 0, θe = 7θ + 90°"]
-    IP --> IC["inverse Clarke<br/>and centering"]
-    IC --> T["TIM1 / TIM2<br/>compare registers"]
-```
-
-The loop runs every 1 ms for both axes.
-
-## Startup
-
-```mermaid
-flowchart TD
-    A["Enable drivers, start PWM"] --> B["Hold both motors at a fixed electrical angle<br/>3.5 V pan, 4.5 V tilt, 2.5 s"]
-    B --> C["Store each encoder reading as zero"]
-    C --> D["Release, wait 0.5 s"]
-    D --> E["Start USART reception"]
-    E --> F["1 ms control loop"]
-```
+![Control loop per axis: command, target angle, PID on the encoder angle, inverse Park and Clarke, timer compare](docs/loop.png)
 
 ## Packet
 
@@ -94,7 +46,7 @@ Measured from the demo video over 287 frames. When the person stands up, the fac
 firmware/Core/Src/main.c   control loop, encoder, FOC, USART
 firmware/Core/Inc/main.h
 firmware/gimbal.ioc        STM32CubeMX configuration
-docs/tracking_offset.png
+docs/                      figures
 ```
 
 ## Build
