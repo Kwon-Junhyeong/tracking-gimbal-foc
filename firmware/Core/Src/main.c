@@ -1,52 +1,32 @@
 #include "main.h"
-#include <math.h>
+#include "foc.h"
 #include <stdint.h>
-#include <stdlib.h>
 
-#define VBUS             12.0f
-#define VOLTAGE_LIMIT    7.0f
-#define POLE_PAIRS       7.0f
-#define ALIGN_VOLTAGE_M1 3.5f
-#define ALIGN_VOLTAGE_M2 4.5f
-#define ALIGN_TIME_MS    2500u
+#define ALIGN_VOLTAGE_PAN  3.5f
+#define ALIGN_VOLTAGE_TILT 4.5f
+#define ALIGN_TIME_MS      2500u
+#define TIMEOUT_MS         2000u
 
-#define CMD_DEADZONE     5
-#define TIMEOUT_MS       2000u
-#define RAMP_ACCEL       0.05f
-#define RAMP_BRAKE       0.05f
-#define TARGET_RATE      (0.0002f / POLE_PAIRS)
-#define TARGET_LIMIT     1.57f
+#define PID_KP             12.0f
+#define PID_KI             0.0f
+#define PID_KD             0.1f
 
-#define LED_PORT         GPIOC
-#define LED_PIN          GPIO_PIN_13
-#define DRV_EN_PORT      GPIOB
-#define DRV_EN1_PIN      GPIO_PIN_12
-#define DRV_EN2_PIN      GPIO_PIN_13
-#define ENC_CS_PORT      GPIOB
-#define ENC1_CS_PIN      GPIO_PIN_0
-#define ENC2_CS_PIN      GPIO_PIN_1
+#define LED_PORT           GPIOC
+#define LED_PIN            GPIO_PIN_13
+#define DRV_EN_PORT        GPIOB
+#define DRV_EN1_PIN        GPIO_PIN_12
+#define DRV_EN2_PIN        GPIO_PIN_13
+#define ENC_CS_PORT        GPIOB
+#define ENC1_CS_PIN        GPIO_PIN_0
+#define ENC2_CS_PIN        GPIO_PIN_1
 
-#define PI_F             3.14159265358979f
-#define TWO_PI_F         6.28318530717959f
-#define SQRT3_2_F        0.86602540378444f
-
-typedef struct {
-  float kp;
-  float ki;
-  float kd;
-  float integral;
-  float prev_err;
-  float out_limit;
-} Pid;
+#define TWO_PI_F           6.28318530717959f
 
 typedef struct {
   TIM_HandleTypeDef *htim;
   uint16_t cs_pin;
-  float offset;
-  float target;
-  float speed;
-  Pid pid;
-} Axis;
+  Axis axis;
+} Motor;
 
 SPI_HandleTypeDef hspi1;
 TIM_HandleTypeDef htim1;
@@ -58,8 +38,8 @@ static volatile int8_t cmd_x = 0;
 static volatile int8_t cmd_y = 0;
 static volatile uint32_t last_pkt_time = 0;
 
-static Axis pan  = { &htim1, ENC1_CS_PIN, 0.0f, 0.0f, 0.0f, { 12.0f, 0.0f, 0.0f, 0.0f, 0.0f, VOLTAGE_LIMIT } };
-static Axis tilt = { &htim2, ENC2_CS_PIN, 0.0f, 0.0f, 0.0f, { 12.0f, 0.0f, 0.0f, 0.0f, 0.0f, VOLTAGE_LIMIT } };
+static Motor pan  = { .htim = &htim1, .cs_pin = ENC1_CS_PIN };
+static Motor tilt = { .htim = &htim2, .cs_pin = ENC2_CS_PIN };
 
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -67,20 +47,6 @@ static void MX_SPI1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
-
-static float constrain_f(float x, float lo, float hi)
-{
-  if (x < lo) return lo;
-  if (x > hi) return hi;
-  return x;
-}
-
-static float wrap_pi(float a)
-{
-  while (a > PI_F) a -= TWO_PI_F;
-  while (a < -PI_F) a += TWO_PI_F;
-  return a;
-}
 
 static float read_as5048a(uint16_t cs_pin)
 {
@@ -92,62 +58,21 @@ static float read_as5048a(uint16_t cs_pin)
   return (float)(rx & 0x3FFF) / 16384.0f * TWO_PI_F;
 }
 
-static void set_phase_voltage(TIM_HandleTypeDef *htim, float uq, float ud, float angle_el)
+static void apply(Motor *m, float uq, float angle_el)
 {
-  uq = constrain_f(uq, -VOLTAGE_LIMIT, VOLTAGE_LIMIT);
+  float duty[3];
+  uint32_t arr = __HAL_TIM_GET_AUTORELOAD(m->htim);
 
-  float ca = cosf(angle_el);
-  float sa = sinf(angle_el);
-  float u_alpha = ca * ud - sa * uq;
-  float u_beta  = sa * ud + ca * uq;
-
-  float ua = u_alpha;
-  float ub = -0.5f * u_alpha + SQRT3_2_F * u_beta;
-  float uc = -0.5f * u_alpha - SQRT3_2_F * u_beta;
-
-  float center = VBUS / 2.0f - (fmaxf(ua, fmaxf(ub, uc)) + fminf(ua, fminf(ub, uc))) / 2.0f;
-  ua += center;
-  ub += center;
-  uc += center;
-
-  uint32_t arr = __HAL_TIM_GET_AUTORELOAD(htim);
-  __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_1, (uint32_t)(constrain_f(ua / VBUS, 0.0f, 1.0f) * arr));
-  __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_2, (uint32_t)(constrain_f(ub / VBUS, 0.0f, 1.0f) * arr));
-  __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_3, (uint32_t)(constrain_f(uc / VBUS, 0.0f, 1.0f) * arr));
+  foc_phase_duties(uq, 0.0f, angle_el, duty);
+  __HAL_TIM_SET_COMPARE(m->htim, TIM_CHANNEL_1, (uint32_t)(duty[0] * arr));
+  __HAL_TIM_SET_COMPARE(m->htim, TIM_CHANNEL_2, (uint32_t)(duty[1] * arr));
+  __HAL_TIM_SET_COMPARE(m->htim, TIM_CHANNEL_3, (uint32_t)(duty[2] * arr));
 }
 
-static float pid_update(Pid *p, float err)
+static void motor_step(Motor *m, int8_t cmd)
 {
-  p->integral = constrain_f(p->integral + err, -p->out_limit, p->out_limit);
-  float out = p->kp * err + p->ki * p->integral + p->kd * (err - p->prev_err);
-  p->prev_err = err;
-  return constrain_f(out, -p->out_limit, p->out_limit);
-}
-
-static void ramp(float *speed, float target)
-{
-  int braking = (target == 0.0f) || (target * (*speed) < 0.0f);
-  float step = braking ? RAMP_BRAKE : RAMP_ACCEL;
-  float diff = target - *speed;
-  if (diff > step) *speed += step;
-  else if (diff < -step) *speed -= step;
-  else *speed = target;
-}
-
-static void align(Axis *a, float voltage)
-{
-  set_phase_voltage(a->htim, voltage, 0.0f, 0.0f);
-}
-
-static void axis_step(Axis *a, int8_t cmd)
-{
-  float c = (abs(cmd) < CMD_DEADZONE) ? 0.0f : (float)cmd;
-  ramp(&a->speed, c);
-  a->target = constrain_f(a->target + a->speed * TARGET_RATE, -TARGET_LIMIT, TARGET_LIMIT);
-
-  float angle = wrap_pi(read_as5048a(a->cs_pin) - a->offset);
-  float uq = pid_update(&a->pid, wrap_pi(a->target - angle));
-  set_phase_voltage(a->htim, uq, 0.0f, angle * POLE_PAIRS + PI_F / 2.0f);
+  FocCommand c = axis_update(&m->axis, cmd, read_as5048a(m->cs_pin));
+  apply(m, c.uq, c.angle_el);
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -202,13 +127,16 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
 
-  align(&pan, ALIGN_VOLTAGE_M1);
-  align(&tilt, ALIGN_VOLTAGE_M2);
+  axis_init(&pan.axis, PID_KP, PID_KI, PID_KD);
+  axis_init(&tilt.axis, PID_KP, PID_KI, PID_KD);
+
+  apply(&pan, ALIGN_VOLTAGE_PAN, 0.0f);
+  apply(&tilt, ALIGN_VOLTAGE_TILT, 0.0f);
   HAL_Delay(ALIGN_TIME_MS);
-  pan.offset = read_as5048a(pan.cs_pin);
-  tilt.offset = read_as5048a(tilt.cs_pin);
-  align(&pan, 0.0f);
-  align(&tilt, 0.0f);
+  axis_set_zero(&pan.axis, read_as5048a(pan.cs_pin));
+  axis_set_zero(&tilt.axis, read_as5048a(tilt.cs_pin));
+  apply(&pan, 0.0f, 0.0f);
+  apply(&tilt, 0.0f, 0.0f);
   HAL_Delay(500);
 
   HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
@@ -219,8 +147,8 @@ int main(void)
       cmd_x = 0;
       cmd_y = 0;
     }
-    axis_step(&pan, cmd_x);
-    axis_step(&tilt, cmd_y);
+    motor_step(&pan, cmd_x);
+    motor_step(&tilt, cmd_y);
     HAL_Delay(1);
   }
 }

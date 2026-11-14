@@ -1,0 +1,4 @@
+*.exe
+*.csv
+/sim/sim
+/sim/duties
