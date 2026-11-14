@@ -1,52 +1,100 @@
 # Tracking Gimbal with FOC Firmware
 
-A two-axis camera gimbal that detects a person with YOLOv8 on a Raspberry Pi and keeps their face centered in the frame. Two gearless BLDC motors are driven by STM32 firmware with SPI encoder feedback, PID position control, and field-oriented control using SVPWM.
+A two-axis camera gimbal that tracks a person using YOLOv8 on a Raspberry Pi and keeps the face centered in the frame. Two gearless BLDC motors are driven by STM32 firmware with encoder feedback, PID position control, and field-oriented control.
 
 September to December 2025
 
 Software: C (STM32 HAL), Python, YOLOv8, GStreamer  
 Hardware: STM32F411, two GM3506 BLDC motors, two DRV8313 drivers, two AS5048A magnetic encoders, Raspberry Pi with camera
 
-![Tracking loop: camera frame with the detected target, processing on the Raspberry Pi and the STM32, the gimbal, and a tracking run](docs/overview.jpg)
-
 ## System
 
-![Architecture: Raspberry Pi vision process, USART packet, STM32 firmware, drivers, motors and encoders](docs/architecture.jpg)
+```mermaid
+flowchart LR
+    CAM["Camera on the tilt arm"]
+    subgraph PI["Raspberry Pi, Python"]
+        GS["GStreamer capture<br/>640 x 480"]
+        YO["YOLOv8 tracking<br/>person class, track IDs"]
+        TS["Target selection<br/>one track ID"]
+        OF["Offset to command<br/>dead zone, PD, low-pass"]
+    end
+    subgraph MCU["STM32F411, C"]
+        RX["USART interrupt<br/>packet parser"]
+        TG["Target angle<br/>per axis"]
+        PID["PID position loop"]
+        FOC["FOC voltage output<br/>SVPWM, 25 kHz"]
+        ENC["AS5048A read<br/>SPI, 14-bit"]
+    end
+    DRV["DRV8313 x 2"]
+    MOT["GM3506 x 2"]
 
-- The Raspberry Pi tracks the person and sends the target offset from the image center as one signed byte for each axis in a 4-byte packet.
-- The STM32 converts the command into a target angle for each axis, reads the rotor angle from the AS5048A encoders, runs a PID position loop, and applies the output as q-axis voltage through inverse Park, inverse Clarke, and SVPWM at 25 kHz.
+    CAM --> GS --> YO --> TS --> OF
+    OF -->|"USART 115200<br/>0xFF, x, y, 0xFE"| RX
+    RX --> TG --> PID --> FOC -->|"PWM x 6"| DRV --> MOT
+    MOT -->|rotor angle| ENC --> PID
+    ENC -->|electrical angle| FOC
+    MOT -.->|pan and tilt move the camera| CAM
+```
 
-![Open loop to closed loop: the first firmware integrated the command into an angle without feedback; the final firmware closes the loop on the encoder angle](docs/control.jpg)
+The Raspberry Pi only determines the face position. The STM32 closes the motor control loop using encoder feedback, so delayed or dropped frames from the Raspberry Pi do not leave the motors without feedback.
 
-## What I built
+## Control loop
 
-- System architecture with vision on the Raspberry Pi and motor control on the STM32, connected through USART
-- STM32 firmware in C for SPI encoder feedback, PID position control, and FOC with SVPWM
-- Integration of the vision and motor systems and the 3D-printed frame
+```mermaid
+flowchart LR
+    C["x and y commands<br/>signed bytes"] --> R["dead zone, ramp"]
+    R --> I["integrate into target angle<br/>limit ±90°"]
+    I --> E(("+ / −"))
+    S["rotor angle θ<br/>encoder − zero"] --> E
+    E --> P["PID<br/>output Uq, limit 7 V"]
+    P --> IP["inverse Park<br/>Ud = 0, θe = 7θ + 90°"]
+    IP --> IC["inverse Clarke<br/>and centering"]
+    IC --> T["TIM1 / TIM2<br/>compare registers"]
+```
 
-## Firmware
+The loop runs every 1 ms for both axes.
 
-`firmware/Core/Src/main.c`
+## Startup
 
-1. Alignment. Each motor is held at a fixed electrical angle for 2.5 s, and the encoder reading is stored as its zero position.
-2. Command. A USART interrupt parses `0xFF, x, y, 0xFE`. Values within a dead zone are ignored, and the command is cleared after 2 s without a packet.
-3. Target. The command is ramped and integrated into a target angle limited to ±90°.
-4. Feedback. The rotor angle is read from the AS5048A over SPI at 14-bit resolution, and the error is wrapped to ±π.
-5. Control. The PID output sets the q-axis voltage, limited to 7 V. The electrical angle is the rotor angle multiplied by 7 pole pairs.
-6. Output. Inverse Park and inverse Clarke produce the three-phase voltages, which are centered and written to the timer compare registers.
+```mermaid
+flowchart TD
+    A["Enable drivers, start PWM"] --> B["Hold both motors at a fixed electrical angle<br/>3.5 V pan, 4.5 V tilt, 2.5 s"]
+    B --> C["Store each encoder reading as zero"]
+    C --> D["Release, wait 0.5 s"]
+    D --> E["Start USART reception"]
+    E --> F["1 ms control loop"]
+```
+
+## Packet
+
+| Byte | Value |
+|---|---|
+| 0 | `0xFF` start |
+| 1 | x command, signed |
+| 2 | y command, signed |
+| 3 | `0xFE` end |
+
+Values within a dead zone of ±5 are ignored. If no packet arrives for 2 s, the command is set to zero and the gimbal holds its position.
 
 ## Result
 
-- The gimbal follows a moving person's face on both axes.
-- In the demo video, the face is 178 px off center in a 480 px frame when the person stands up. After 1.5 s, it returns to within 20 px of the center.
+![Offset of the target from the image center while the person sits, stands up and moves](docs/tracking_offset.png)
+
+Measured from the demo video over 287 frames. When the person stands up, the face reaches an offset of 178 px in the 480 px image. It returns to within 20 px of center 1.5 s later.
+
+## What I built
+
+- System architecture with vision on the Raspberry Pi and motor control on the STM32, connected by USART
+- STM32 firmware in C with SPI encoder input, PID position control, and FOC with SVPWM
+- Integration of the vision and motor systems and the 3D-printed frame
 
 ## Repository
 
-```
+```text
 firmware/Core/Src/main.c   control loop, encoder, FOC, USART
 firmware/Core/Inc/main.h
-firmware/gimbal.ioc        STM32CubeMX configuration (clocks, SPI1, TIM1, TIM2, USART1, pins)
-docs/                      figures
+firmware/gimbal.ioc        STM32CubeMX configuration
+docs/tracking_offset.png
 ```
 
 ## Build
@@ -59,4 +107,4 @@ Open `firmware/gimbal.ioc` in STM32CubeIDE, generate the code, and replace the g
 | Tilt motor PWM (TIM2) | PA0, PA1, PA2 |
 | Encoders (SPI1) | PA5 SCK, PA6 MISO, PA7 MOSI, PB0 and PB1 chip select |
 | Driver enable | PB12, PB13 |
-| USART1 from the Raspberry Pi | PB6 TX, PB7 RX, 115200 baud |
+| USART1 from the Raspberry Pi | PB6 TX, PB7 RX |
