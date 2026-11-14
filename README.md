@@ -2,7 +2,7 @@
 
 A two-axis camera gimbal that keeps a tracked person centered in the frame. A Raspberry Pi finds the target with YOLOv8 and sends a direction command. An STM32F411 uses the magnetic encoder in each motor to close the position loop and drives two gearless BLDC motors with field-oriented control.
 
-The project ran from September to December 2025. This repository is a write-up I put together afterward. It holds the STM32 firmware with the position loop closed on the encoder, and simulations that run the same control code on a PC.
+The project ran from September to December 2025. This repository holds the STM32 firmware with the position loop closed on the encoder, and simulations that run the same control code on a PC.
 
 | Part | |
 |---|---|
