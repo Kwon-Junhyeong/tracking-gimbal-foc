@@ -1,8 +1,24 @@
 # Tracking Gimbal with FOC Firmware
 
-A two-axis camera gimbal that keeps a tracked person centered in the frame. A Raspberry Pi finds the target with YOLOv8 and sends a direction command. An STM32F411 uses the magnetic encoder in each motor to close the position loop and drives two gearless BLDC motors with field-oriented control.
+A two-axis camera gimbal that follows a person on its own. It needs no app, no phone and no network: switch it on and it tracks. A Raspberry Pi on the gimbal finds the person in the camera image, and an STM32 turns two gearless BLDC motors to keep the face in the centre of the frame.
 
-The project ran from September to December 2025. This repository holds the STM32 firmware with the position loop closed on the encoder, and simulations that run the same control code on a PC.
+Tracking gimbals usually depend on a companion app or a connection to something else. The aim here was a device that decides and moves by itself, so every computation runs on the gimbal. That removes the delay of a round trip over a link and lets it work anywhere there is power.
+
+The project ran from September to December 2025. This repository holds the STM32 firmware, with the position loop closed on the encoder in each motor, and simulations that run the same control code on a PC.
+
+## Design decisions
+
+**Vision and motor control on separate processors.** One board could have done both. Detection takes a different time on every frame, though, and the motors need a fixed control period. The Raspberry Pi only looks, and the STM32 only drives, so a slow frame never stretches the motor loop.
+
+**A command, not a coordinate.** The Raspberry Pi sends how far the target is from the centre as a direction and a magnitude, in two signed bytes. It needs no knowledge of the motor angles, and the STM32 needs no knowledge of the image.
+
+**Camera capture through GStreamer.** The default OpenCV capture added latency before a frame reached the detector. A GStreamer pipeline delivers frames with less delay, and the gimbal can only follow what it has already seen.
+
+**Which person to follow.** YOLOv8n finds people, and the largest box, the nearest person, is the first target. Each person gets a track ID so the target survives being crossed or briefly hidden. The target changes only when another person stays in the switch zone at the centre for 0.5 s, so it does not flip back and forth.
+
+**From open loop to closed loop.** The first drive stepped the electrical angle from the command and applied a voltage, with no feedback. It was simple, and it showed three problems on the bench: the motor lost step in fast moves, it hunted around the target instead of settling, and it applied the same voltage whatever the load, which meant heat and wasted power. An encoder on each motor closes the loop: the rotor angle sets the electrical angle, so the field stays aligned with the rotor, and the voltage follows the position error instead of being fixed.
+
+**Voltage mode.** The voltage is applied on the q axis with the d axis at zero, and there is no current sensing. The controller output is a voltage command, not a torque command.
 
 | Part | |
 |---|---|
