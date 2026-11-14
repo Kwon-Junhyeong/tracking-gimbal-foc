@@ -1,4 +1,5 @@
 *.exe
 *.csv
+/follow
 /sim/sim
-/sim/duties
+/duties

@@ -1,48 +1,11 @@
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "foc.h"
-
-#define PI_D 3.14159265358979
-
-typedef struct {
-  double r;
-  double kt;
-  double ke;
-  double j;
-  double b;
-} Motor;
-
-typedef struct {
-  double theta;
-  double omega;
-} State;
+#include "model.h"
 
 typedef struct {
   float angle_el;
   float speed;
 } OpenLoop;
-
-static void voltage_vector(float uq, float angle_el, double *mag, double *phase)
-{
-  float d[3];
-  foc_phase_duties(uq, 0.0f, angle_el, d);
-  double ua = d[0] * FOC_VBUS, ub = d[1] * FOC_VBUS, uc = d[2] * FOC_VBUS;
-  double alpha = (2.0 * ua - ub - uc) / 3.0;
-  double beta = (ub - uc) / sqrt(3.0);
-  *mag = hypot(alpha, beta);
-  *phase = atan2(beta, alpha);
-}
-
-static void motor_step(const Motor *m, State *s, double mag, double phase, double load, double dt)
-{
-  double rotor = FOC_POLE_PAIRS * s->theta + PI_D / 2.0;
-  double vq = mag * sin(phase - rotor);
-  double iq = (vq - m->ke * s->omega) / m->r;
-  double torque = m->kt * iq - m->b * s->omega - load;
-  s->omega += torque / m->j * dt;
-  s->theta += s->omega * dt;
-}
 
 static float open_loop_step(OpenLoop *o, int8_t cmd, float *angle_el)
 {
@@ -63,7 +26,6 @@ int main(int argc, char **argv)
   float kd = argc > 2 ? (float)atof(argv[2]) : 0.1f;
   double load_peak = argc > 3 ? atof(argv[3]) : 0.03;
 
-  Motor m = { 5.57, 0.068, 0.068, 5.0e-5, 1.0e-4 };
   State closed = { 0.0, 0.0 };
   State open = { 0.0, 0.0 };
   Axis axis;
@@ -90,8 +52,8 @@ int main(int argc, char **argv)
     voltage_vector(ol_u, ol_angle, &mag_o, &ph_o);
 
     for (int i = 0; i < substeps; i++) {
-      motor_step(&m, &closed, mag_c, ph_c, load, dt);
-      motor_step(&m, &open, mag_o, ph_o, load, dt);
+      motor_step(&GM3506, &closed, mag_c, ph_c, load, dt);
+      motor_step(&GM3506, &open, mag_o, ph_o, load, dt);
     }
 
     printf("%.3f,%d,%.4f,%.5f,%.5f,%.3f,%.5f,%.5f,%.2f\n", t, cmd, load,
