@@ -10,7 +10,7 @@ Detection time varies from frame to frame, while the motor loop needs a fixed 1 
 
 ## From open loop to closed-loop FOC
 
-The first firmware stepped the electrical angle with no feedback. It lost synchronism in fast moves, hunted around the target and ran hot. Now the encoder angle sets the direction of the voltage vector, and a PD controller on the axis angle sets its size (voltage mode on the q axis, 7 V limit). At power-up a fixed voltage vector holds each rotor for 2.5 s, and the encoder reading becomes the zero angle.
+The first firmware stepped the electrical angle with no feedback. It lost synchronism in fast moves, hunted around the target and ran hot. Now the encoder angle sets the electrical angle of the rotating frame, and a PD controller on the axis angle sets the q-axis voltage (voltage mode, 7 V limit). At power-up a fixed voltage vector holds each rotor for 2.5 s, and the encoder reading becomes the zero angle.
 
 ## Build
 
