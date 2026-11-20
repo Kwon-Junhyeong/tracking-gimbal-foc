@@ -1,6 +1,6 @@
 # Tracking Gimbal with FOC Firmware
 
-A two-axis camera gimbal that keeps a person's face in the centre of the frame. It needs only power. A Raspberry Pi finds the face, and an STM32 drives two BLDC motors with field-oriented control, using encoder feedback.
+A two-axis camera gimbal that keeps a person's face in the center of the frame. It needs only power. A Raspberry Pi finds the face, and an STM32 drives two BLDC motors with field-oriented control, using encoder feedback.
 
 ![System](docs/system.png)
 
