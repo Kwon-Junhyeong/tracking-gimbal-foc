@@ -5,7 +5,7 @@
 
 #define FOC_VBUS           12.0f
 #define FOC_VOLTAGE_LIMIT  7.0f
-#define FOC_POLE_PAIRS     7.0f
+#define FOC_POLE_PAIRS     11.0f
 #define FOC_LOOP_DT        0.001f
 
 #define FOC_CMD_DEADZONE   5
